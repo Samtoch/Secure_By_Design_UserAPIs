@@ -1,0 +1,38 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+	<ItemGroup>
+		<PackageReference Include="Microsoft.AspNetCore.SignalR.Core" Version="1.2.11" />
+		<PackageReference Include="Microsoft.SemanticKernel" Version="1.70.0" />
+		
+		<PackageReference Include="MediatR" Version="12.4.1" />
+		<PackageReference Include="FluentValidation" Version="11.11.0" />
+		<PackageReference Include="FluentValidation.DependencyInjectionExtensions" Version="11.11.0" />
+		<PackageReference Include="FluentValidation" Version="11.11.0" />
+		<PackageReference Include="HtmlAgilityPack" Version="1.12.4" />
+
+		<PackageReference Include="AutoMapper" Version="16.1.1" />
+		<PackageReference Include="Microsoft.Extensions.Http" Version="10.0.0" />
+		<PackageReference Include="Newtonsoft.Json" Version="13.0.4" />
+		<PackageReference Include="Microsoft.Extensions.Configuration" Version="10.0.3" />
+		<PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.3" />
+		<PackageReference Include="Microsoft.Extensions.Logging" Version="10.0.3" />
+		<PackageReference Include="NLog" Version="6.1.1" />
+		<PackageReference Include="System.IdentityModel.Tokens.Jwt" Version="8.18.0" />
+	</ItemGroup>
+
+	<ItemGroup>
+	  <ProjectReference Include="..\Securebydesign.Domain\Securebydesign.Domain.csproj" />
+	</ItemGroup>
+
+	<ItemGroup>
+	  <Folder Include="Common\Settings\" />
+	  <Folder Include="Interfaces\UserServices\" />
+	</ItemGroup>
+
+</Project>

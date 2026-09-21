@@ -1,0 +1,6 @@
+<Solution>
+  <Project Path="Securebydesign.Api/Securebydesign.Api.csproj" />
+  <Project Path="Securebydesign.Application/Securebydesign.Application.csproj" />
+  <Project Path="Securebydesign.Domain/Securebydesign.Domain.csproj" />
+  <Project Path="Securebydesign.Infrastructure/Securebydesign.Infrastructure.csproj" />
+</Solution>

@@ -1,0 +1,30 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Dapper" Version="2.1.72" />
+    <PackageReference Include="HtmlAgilityPack" Version="1.12.4" />
+    <PackageReference Include="Microsoft.AspNet.WebApi.Client" Version="6.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Http" Version="10.0.0" />
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.4" />
+    <PackageReference Include="Npgsql" Version="10.0.2" />
+
+	  <PackageReference Include="AutoMapper" Version="16.1.1" />
+
+	  <PackageReference Include="Microsoft.Extensions.Configuration" Version="10.0.3" />
+	  <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.3" />
+	  <PackageReference Include="Microsoft.Extensions.Logging" Version="10.0.3" />
+	  <PackageReference Include="NLog" Version="6.1.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Securebydesign.Application\Securebydesign.Application.csproj" />
+    <ProjectReference Include="..\Securebydesign.Domain\Securebydesign.Domain.csproj" />
+  </ItemGroup>
+
+</Project>

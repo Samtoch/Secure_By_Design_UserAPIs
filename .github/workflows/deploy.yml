@@ -1,0 +1,64 @@
+name: CI/CD Build and Deploy Agentwork API
+
+on:
+  push:
+    branches: [ "main" ]
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout Source Code
+      uses: actions/checkout@v4
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    # We build the image locally on GitHub's runners, export it as a tar file, and pass it 
+    # to your droplet to completely save RAM on your 1GB droplet during heavy compilation steps.
+    # Step 1: Build the image and output it locally inside the workspace folder
+    - name: Build and Export Production Docker Image
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        file: ./Dockerfile
+        tags: agentwork-api:latest
+        no-cache: true
+        outputs: type=docker,dest=agentwork-api.tar # <-- Removed the leading "/tmp/"
+
+    # Step 2: Transfer the file using a relative workspace path
+    - name: Copy Docker Image to DigitalOcean Droplet via SSH/SCP
+      uses: appleboy/scp-action@v0.1.7
+      with:
+        host: ${{ secrets.DROPLET_HOST }}
+        username: root
+        key: ${{ secrets.SSH_PRIVATE_KEY }}
+        source: "agentwork-api.tar" # <-- Removed the leading "/tmp/"
+        target: "/tmp"              # Keep this! It tells Nginx/Droplet to place it in the server's /tmp folder
+
+    # Step 3: Run the server-side container swap
+    - name: Execute Server Side Container Swap over SSH
+      uses: appleboy/ssh-action@v1.0.3
+      with:
+        host: ${{ secrets.DROPLET_HOST }}
+        username: root
+        key: ${{ secrets.SSH_PRIVATE_KEY }}
+        script: |
+          # Load the freshly transferred image from the server's /tmp folder
+          docker load -i /tmp/agentwork-api.tar
+          rm /tmp/agentwork-api.tar
+          # Stop and cycle the containers
+          docker stop agentwork-api-prod || true
+          docker rm agentwork-api-prod || true
+          docker run -d \
+            --name agentwork-api-prod \
+            --restart always \
+            -p 5001:5001 \
+            -v /var/www/api/appsettings.json:/app/appsettings.json \
+            -v /var/www/api/nlog.config:/app/nlog.config \
+            -v /var/www/emailtemplates:/var/www/emailtemplates \
+            -v /var/www/uploads:/uploads \
+            -v /tmp/logs/api:/tmp/logs/api \
+            agentwork-api:latest
+          docker image prune -f

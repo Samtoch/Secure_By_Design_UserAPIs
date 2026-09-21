@@ -1,0 +1,10 @@
+# Ignore vs configurations
+.vs
+# Ignore the base appsettings file
+appsettings.json
+
+# Ignore environment-specific appsettings files
+appsettings.*.json
+bin/
+obj/
+*.user
