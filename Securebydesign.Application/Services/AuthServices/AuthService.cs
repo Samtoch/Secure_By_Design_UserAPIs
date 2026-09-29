@@ -1,16 +1,18 @@
-﻿using Securebydesign.Application.DTOs.Generic;
+﻿using AutoMapper;
+using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using Securebydesign.Application.DTOs.Auth;
+using Securebydesign.Application.DTOs.Generic;
 using Securebydesign.Application.DTOs.Users;
 using Securebydesign.Application.Helpers;
 using Securebydesign.Application.Interfaces;
 using Securebydesign.Application.Interfaces.AuthServices;
 using Securebydesign.Application.Interfaces.EmailServices;
 using Securebydesign.Application.Interfaces.Repositories;
+using Securebydesign.Application.Services.AuthServices;
 using Securebydesign.Domain.Entities;
 using Securebydesign.Domain.Entities.Auth;
-using AutoMapper;
-using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Options;
 using System;
 using System.Collections.Generic;
 using System.IdentityModel.Tokens.Jwt;
@@ -28,13 +30,17 @@ namespace Securebydesign.Application.Services
         private readonly IEmailService _emailService;
         private readonly IAuthRepository _authRepository;
         private readonly IUserRepository _userRepository;
+        private readonly IPasswordHasher _passwordHasher;
+        private readonly IHttpContextAccessor _httpContextAccessor;
 
-        public AuthService(IMapper mapper, IJwtService jwtService, IOptions<TokenSettings> tokenSettings, 
+        public AuthService(IPasswordHasher passwordHasher, IMapper mapper, IJwtService jwtService, IOptions<TokenSettings> tokenSettings, 
             ILogger<AuthService> logger, IEmailService emailService, IAuthRepository authRepository, 
-            IUserRepository userRepository)
+            IUserRepository userRepository, IHttpContextAccessor httpContextAccessor)
         {
+            _httpContextAccessor = httpContextAccessor;
             _tokenSettings = tokenSettings.Value;
             _authRepository = authRepository;
+            _passwordHasher = passwordHasher;
             _userRepository = userRepository;
             _emailService = emailService;
             _jwtService = jwtService; 
@@ -44,66 +50,13 @@ namespace Securebydesign.Application.Services
         }
 
         // LOGIN
-        public async Task<ApiResponse<LoginResponse>> LoginAsync_(LoginRequest request)
-        {
-            try
-            {
-                if (request == null
-                    || string.IsNullOrWhiteSpace(request.Username)
-                    || string.IsNullOrWhiteSpace(request.Password))
-                    return new ApiResponse<LoginResponse>
-                    {
-                        Message = "Invalid login request",
-                        StatusCode = 400,
-                        Flag = false,
-                        Data = null
-                    };
-
-                request.Password = Helper.ComputeStringToSha256Hash(request.Password);
-
-                var user = await _userRepository.UserLoginAsync(request);
-                if (user == null)
-                    return new ApiResponse<LoginResponse>
-                    {
-                        Message = "Invalid username or password",
-                        StatusCode = 401,
-                        Flag = false,
-                        Data = null
-                    };
-
-                var userResponse = _mapper.Map<LoginResponse>(user);
-                var tokenResponse = _jwtService.GenerateToken(user);
-                userResponse.Token = tokenResponse.AccessToken;
-                userResponse.ExpiresAt = tokenResponse.ExpiresAt;
-
-                return new ApiResponse<LoginResponse>
-                {
-                    Message = "Login successful",
-                    StatusCode = 200,
-                    Flag = true,
-                    Data = userResponse
-                };
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Error during login for {Username}", request?.Username);
-                return new ApiResponse<LoginResponse>
-                {
-                    Message = "An error occurred",
-                    StatusCode = 500,
-                    Flag = false,
-                    Data = null
-                };
-            }
-        }
-
         public async Task<ApiResponse<LoginResponse>> LoginAsync(LoginRequest request)
         {
             try
             {
-                if (request == null
-                    || string.IsNullOrWhiteSpace(request.Username)
-                    || string.IsNullOrWhiteSpace(request.Password))
+                if (request == null || string.IsNullOrWhiteSpace(request.Username) || string.IsNullOrWhiteSpace(request.Password))
+                {
+                    await AuditAsync("Invalid login request", 400);
                     return new ApiResponse<LoginResponse>
                     {
                         Message = "Invalid login request",
@@ -111,11 +64,15 @@ namespace Securebydesign.Application.Services
                         Flag = false,
                         Data = null
                     };
+                }
 
-                request.Password = Helper.ComputeStringToSha256Hash(request.Password);
+                var user = await _userRepository.GetUserByEmailAsync(request.Username);
 
-                var user = await _userRepository.UserLoginAsync(request);
-                if (user == null)
+                bool isValidPassword = _passwordHasher.Verify(request.Password, user.PasswordHash);
+
+                if (!isValidPassword)
+                {
+                    await AuditAsync("Invalid username or password", 401, user?.Id, user?.Role);
                     return new ApiResponse<LoginResponse>
                     {
                         Message = "Invalid username or password",
@@ -123,15 +80,7 @@ namespace Securebydesign.Application.Services
                         Flag = false,
                         Data = null
                     };
-
-                if (!user.EmailConfirmed)
-                    return new ApiResponse<LoginResponse>
-                    {
-                        Message = "User not authorised. Please verify your account with your email",
-                        StatusCode = 401,
-                        Flag = false,
-                        Data = null
-                    };
+                }
 
                 var tokenResponse = _jwtService.GenerateToken(user);
 
@@ -148,6 +97,7 @@ namespace Securebydesign.Application.Services
                 userResponse.RefreshToken = tokenResponse.RefreshToken;
                 userResponse.ExpiresAt = tokenResponse.ExpiresAt;
 
+                await AuditAsync("User logged in successfully", 200, user.Id, user.Role);
                 return new ApiResponse<LoginResponse>
                 {
                     Message = "Login successful",
@@ -159,6 +109,7 @@ namespace Securebydesign.Application.Services
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error during login for {Username}", request?.Username);
+                await AuditAsync("Error during login", 500);
                 return new ApiResponse<LoginResponse>
                 {
                     Message = "An error occurred",
@@ -653,5 +604,21 @@ namespace Securebydesign.Application.Services
             }
         }
 
+
+        private async Task AuditAsync(string eventName, int status, Guid? userId = null, string? role = null)
+        {
+            var http = _httpContextAccessor.HttpContext;
+
+            await _userRepository.SaveAuditLogAsync(new AuditLog
+            {
+                Event = eventName,
+                UserId = userId ?? (Guid.TryParse(http?.User.FindFirst("sub").Value, out var id) ? id : null),
+                Role = role ?? http?.User.FindFirst("role").Value,
+                Endpoint = http == null ? null : $"{http.Request.Method} {http.Request.Path}",
+                Status = status,
+                Ip = http?.Connection.RemoteIpAddress?.ToString(),
+                CorrelationId = http?.TraceIdentifier
+            });
+        }
     }
 }

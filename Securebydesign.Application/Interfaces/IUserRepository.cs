@@ -1,4 +1,5 @@
 ﻿using Securebydesign.Application.DTOs.Users;
+using Securebydesign.Application.Services.AuthServices;
 using Securebydesign.Domain.Entities;
 using System;
 using System.Collections.Generic;
@@ -11,11 +12,13 @@ namespace Securebydesign.Application.Interfaces
         Task<IEnumerable<User>> GetAllUsersAsync();
         Task<User?> GetUserByIdAsync(Guid id);
         Task<User?> GetUserByEmailAsync(string email);
+        Task<IEnumerable<User>> GetUserByEmail(string email);
         Task<User?> GetUserByPhoneAsync(string phone);
         Task<IEnumerable<User>> GetUserByRoleAsync(string role);
         Task<User?> UserLoginAsync(LoginRequest user);
         Task<SignupResponse> CreateUserAsync(SignupRequest user);
         Task<bool> UpdateUserAsync(UpdateRequest user, Guid Id);
         Task<bool> DeleteUserAsync(Guid id);
+        Task SaveAuditLogAsync(AuditLog log);
     }
 }

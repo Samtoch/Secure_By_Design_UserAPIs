@@ -1,11 +1,12 @@
-﻿using Securebydesign.Application.DTOs.Auth;
-using Securebydesign.Application.Interfaces;
-using Securebydesign.Domain.Entities;
-using Microsoft.Extensions.Logging;
+﻿using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 //using Microsoft.IdentityModel.JsonWebTokens;
 using Microsoft.IdentityModel.Tokens;
+using Securebydesign.Application.DTOs.Auth;
+using Securebydesign.Application.Interfaces;
+using Securebydesign.Domain.Entities;
 using System;
+using System.Buffers.Text;
 using System.Collections.Generic;
 using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
@@ -14,106 +15,69 @@ using System.Text;
 
 namespace Securebydesign.Application.Services
 {
+    /// <summary>
+    /// Issues and reads tokens. It decides WHAT goes into a token;
+    /// what a token is ALLOWED to do is decided by the policies in the API project.
+    /// </summary>
     public class JwtService : IJwtService
     {
         private readonly JwtSettings _jwtSettings;
         private readonly ILogger<JwtService> _logger;
+        private readonly SymmetricSecurityKey _signingKey;
 
         public JwtService(IOptions<JwtSettings> jwtSettings, ILogger<JwtService> logger)
         {
             _jwtSettings = jwtSettings.Value;
             _logger = logger;
+            _signingKey = JwtTokenValidation.CreateSigningKey(_jwtSettings.Key);
         }
 
         // GENERATE TOKEN
-        public TokenResponse GenerateToken_(User user)
-        {
-            var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(_jwtSettings.Key));
-            var credentials = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
-            var expiry = DateTime.Now.AddMinutes(_jwtSettings.ExpiryMinutes);
-
-            var claims = new[]
-            {
-                new Claim(JwtRegisteredClaimNames.Sub,   user.Id.ToString()),
-                new Claim(JwtRegisteredClaimNames.Email, user.Email ?? string.Empty),
-                new Claim(JwtRegisteredClaimNames.Jti,   Guid.NewGuid().ToString()),
-                new Claim(ClaimTypes.Role,               user.Role ?? string.Empty),
-                new Claim(ClaimTypes.Name,               user.Username ?? string.Empty),
-                new Claim("firstname",                   user.FirstName ?? string.Empty),
-                new Claim("lastname",                    user.LastName ?? string.Empty),
-            };
-
-            var token = new JwtSecurityToken(
-                issuer: _jwtSettings.Issuer,
-                audience: _jwtSettings.Audience,
-                claims: claims,
-                expires: expiry,
-                signingCredentials: credentials
-            );
-
-            return new TokenResponse
-            {
-                AccessToken = new JwtSecurityTokenHandler().WriteToken(token),
-                ExpiresAt = expiry,
-                Email = user.Email,
-                Role = user.Role
-            };
-        }
-
         public TokenResponse GenerateToken(User user)
         {
-            var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(_jwtSettings.Key));
-            var credentials = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
-            var expiry = DateTime.Now.AddMinutes(_jwtSettings.ExpiryMinutes); 
+            var now = DateTime.UtcNow;                       // UTC, not local time
+            var expiry = now.AddMinutes(_jwtSettings.ExpiryMinutes);
 
+            // Least privilege: a user with no role gets the lowest one, never an empty claim.
+            string role = string.IsNullOrWhiteSpace(user.Role) ? Roles.User : user.Role;
+
+            // Only what authorisation needs. The payload is readable by anyone,
+            // so no email, names or other personal data.
             var claims = new[]
             {
-                new Claim(JwtRegisteredClaimNames.Sub,   user.Id.ToString()),
-                new Claim(JwtRegisteredClaimNames.Email, user.Email ?? string.Empty),
-                new Claim(JwtRegisteredClaimNames.Jti,   Guid.NewGuid().ToString()),
-                new Claim(ClaimTypes.Role,               user.Role ?? string.Empty),
-                new Claim(ClaimTypes.Name,               user.Username ?? string.Empty),
-                new Claim("firstname",                   user.FirstName ?? string.Empty),
-                new Claim("lastname",                    user.LastName ?? string.Empty),
+                new Claim(AppClaimTypes.UserId,         user.Id.ToString()),
+                new Claim(JwtRegisteredClaimNames.Jti,  Guid.NewGuid().ToString()),
+                new Claim(AppClaimTypes.Role,           role),
+                new Claim(AppClaimTypes.Name,           user.Username ?? string.Empty),
             };
 
             var token = new JwtSecurityToken(
                 issuer: _jwtSettings.Issuer,
                 audience: _jwtSettings.Audience,
                 claims: claims,
+                notBefore: now,
                 expires: expiry,
-                signingCredentials: credentials
-            );
+                signingCredentials: new SigningCredentials(_signingKey, SecurityAlgorithms.HmacSha256));
 
             return new TokenResponse
             {
                 AccessToken = new JwtSecurityTokenHandler().WriteToken(token),
-                RefreshToken = GenerateRefreshToken(), // attaching here for refresh token generation
+                RefreshToken = GenerateRefreshToken(),
                 ExpiresAt = expiry,
-                Email = user.Email,
-                Role = user.Role
+                Email = user.Email,   // fine in the response body; just not inside the token
+                Role = role
             };
         }
 
-
         // VALIDATE TOKEN
+        // Note: the JwtBearer middleware already validates every request's token.
+        // Keep this only if something outside the request pipeline needs it.
         public bool ValidateToken(string token)
         {
             try
             {
-                var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(_jwtSettings.Key));
-                new JwtSecurityTokenHandler().ValidateToken(token, new TokenValidationParameters
-                {
-                    ValidateIssuerSigningKey = true,
-                    IssuerSigningKey = key,
-                    ValidateIssuer = true,
-                    ValidIssuer = _jwtSettings.Issuer,
-                    ValidateAudience = true,
-                    ValidAudience = _jwtSettings.Audience,
-                    ValidateLifetime = true,
-                    ClockSkew = TimeSpan.Zero
-                }, out _);
-
+                CreateHandler().ValidateToken(
+                    token, JwtTokenValidation.CreateParameters(_jwtSettings, _signingKey), out _);
                 return true;
             }
             catch (Exception ex)
@@ -123,25 +87,17 @@ namespace Securebydesign.Application.Services
             }
         }
 
-        // GET PRINCIPAL FROM TOKEN
+        // GET PRINCIPAL FROM (POSSIBLY EXPIRED) TOKEN, for the refresh flow only.
+        // Signature, issuer, audience and algorithm are still checked; only expiry is skipped.
+        // The caller MUST also verify the refresh token against the stored value for this user.
         public ClaimsPrincipal? GetPrincipalFromToken(string token)
         {
             try
             {
-                var handler = new JwtSecurityTokenHandler();
-                handler.InboundClaimTypeMap.Clear(); // prevents short claim names being remapped to long URIs
-
-                var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(_jwtSettings.Key));
-                return handler.ValidateToken(token, new TokenValidationParameters
-                {
-                    ValidateIssuerSigningKey = true,
-                    IssuerSigningKey = key,
-                    ValidateIssuer = true,
-                    ValidIssuer = _jwtSettings.Issuer,
-                    ValidateAudience = true,
-                    ValidAudience = _jwtSettings.Audience,
-                    ValidateLifetime = false  // allow reading claims from expired tokens
-                }, out _);
+                return CreateHandler().ValidateToken(
+                    token,
+                    JwtTokenValidation.CreateParameters(_jwtSettings, _signingKey, validateLifetime: false),
+                    out _);
             }
             catch (Exception ex)
             {
@@ -151,12 +107,12 @@ namespace Securebydesign.Application.Services
         }
 
         // GENERATE REFRESH TOKEN
-        public string GenerateRefreshToken()
-        {
-            var randomBytes = new byte[64];
-            using var rng = RandomNumberGenerator.Create();
-            rng.GetBytes(randomBytes);
-            return Convert.ToBase64String(randomBytes);
-        }
+        // Store only its SHA-256 hash in the database (e.g. Sha256Hasher.HashToHex),
+        // rotate it on every use, and give it an expiry.
+        public string GenerateRefreshToken() =>
+            Base64Url.EncodeToString(RandomNumberGenerator.GetBytes(64));   // URL-safe, no + or /
+
+        // Keep short claim names ("sub", "role") exactly as written
+        private static JwtSecurityTokenHandler CreateHandler() => new() { MapInboundClaims = false };
     }
 }

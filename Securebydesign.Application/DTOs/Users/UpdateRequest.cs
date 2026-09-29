@@ -1,28 +1,29 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.ComponentModel.DataAnnotations;
 using System.Text;
 
 namespace Securebydesign.Application.DTOs.Users
 {
     public class UpdateRequest
     {
-        public string Username { get; set; }
-        public string Role { get; set; }
-        public string? Email { get; set; }
-        public string? FirstName { get; set; }
-        public string? LastName { get; set; }
-        public bool EmailConfirmed { get; set; }
-        public bool LockoutEnabled { get; set; }
-        public int AccessFailedCount { get; set; }
-        public DateTime? LockoutEnd { get; set; }
-        public string? NormalizedEmail { get; set; }
-        public string? NormalizedUsername { get; set; }
-        public string? PhoneNumber { get; set; }
-        public bool TwoFactorEnabled { get; set; }
+        [EmailAddress, StringLength(254)]
+        public string? Username { get; set; }
 
-        public int NeighborhoodId { get; set; }
-        public double Latitude { get; set; }
-        public double Longitude { get; set; }
-        public string City { get; set; }
+        [StringLength(100)]
+        public string? FirstName { get; set; }
+
+        [StringLength(100)]
+        public string? LastName { get; set; }
+
+        [Phone, StringLength(20)]
+        public string? PhoneNumber { get; set; }
+
+        // Nullable so an omitted value doesn't silently become 0
+        [Range(1, int.MaxValue)]
+        public int? NeighborhoodId { get; set; }
+
+        [StringLength(100)]
+        public string? City { get; set; }
     }
 }

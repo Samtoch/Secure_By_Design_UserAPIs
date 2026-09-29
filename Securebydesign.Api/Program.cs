@@ -1,18 +1,3 @@
-using Securebydesign.Api.Middleware;
-using Securebydesign.Application;
-using Securebydesign.Application.DTOs.Auth;
-using Securebydesign.Application.Interfaces;
-using Securebydesign.Application.Interfaces.EmailServices;
-using Securebydesign.Application.Interfaces.EmailTemplate;
-using Securebydesign.Application.Interfaces.Repositories;
-using Securebydesign.Application.Jobs;
-using Securebydesign.Application.Services;
-using Securebydesign.Infrastructure;
-using Securebydesign.Infrastructure.EmailServices;
-using Securebydesign.Infrastructure.EmailTemplates;
-using Securebydesign.Infrastructure.External;
-using Securebydesign.Infrastructure.External.OpenAI;
-using Securebydesign.Infrastructure.Repositories;
 using Hangfire;
 using Hangfire.PostgreSql;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
@@ -23,8 +8,27 @@ using Microsoft.OpenApi.Models;
 using Microsoft.SemanticKernel;
 using NLog;
 using NLog.Web;
-using System.Text;
 using Securebydesign.Api.Filters;
+using Securebydesign.Api.Middleware;
+using Securebydesign.Application;
+using Securebydesign.Application.DTOs.Auth;
+using Securebydesign.Application.Interfaces;
+using Securebydesign.Application.Interfaces.AuthServices;
+using Securebydesign.Application.Interfaces.EmailServices;
+using Securebydesign.Application.Interfaces.EmailTemplate;
+using Securebydesign.Application.Interfaces.Repositories;
+using Securebydesign.Application.Jobs;
+using Securebydesign.Application.Services;
+using Securebydesign.Application.Services.AuthServices;
+using Securebydesign.Infrastructure;
+using Securebydesign.Infrastructure.EmailServices;
+using Securebydesign.Infrastructure.EmailTemplates;
+using Securebydesign.Infrastructure.External;
+using Securebydesign.Infrastructure.External.OpenAI;
+using Securebydesign.Infrastructure.Repositories;
+using System.Net;
+using System.Text;
+using Securebydesign.Api.Extensions;
 
 namespace Securebydesign.Api
 {
@@ -32,61 +36,66 @@ namespace Securebydesign.Api
     {
         public static void Main(string[] args)
         {
+            DotNetEnv.Env.TraversePath().NoClobber().Load();
             var logger = LogManager.Setup().LoadConfigurationFromFile("nlog.config").GetCurrentClassLogger();
             try
             {
                 var builder = WebApplication.CreateBuilder(args);
 
-                // Bind settings
+                // Bind JWT and Token settings from configuration
                 builder.Services.Configure<JwtSettings>(builder.Configuration.GetSection("JwtSettings"));
                 builder.Services.Configure<TokenSettings>(builder.Configuration.GetSection("TokenSettings"));
 
-                // JWT Authentication
-                var jwtSettings = builder.Configuration.GetSection("JwtSettings").Get<JwtSettings>();
-                var key = Encoding.UTF8.GetBytes(jwtSettings!.Key);
+                // ── AUTHENTICATION: who are you? ──
+                var jwtSettings = builder.Configuration.GetSection("JwtSettings").Get<JwtSettings>()
+                    ?? throw new InvalidOperationException("The JwtSettings section is missing.");
+                var signingKey = JwtTokenValidation.CreateSigningKey(jwtSettings.Key);   // fails fast on a weak key
 
-                builder.Services.AddAuthentication(options =>
-                {
-                    options.DefaultAuthenticateScheme = JwtBearerDefaults.AuthenticationScheme;
-                    options.DefaultChallengeScheme = JwtBearerDefaults.AuthenticationScheme;
-                })
-                .AddJwtBearer(options =>
-                {
-                    options.RequireHttpsMetadata = false; // set true in production
-                    options.SaveToken = true;
-                    options.TokenValidationParameters = new TokenValidationParameters
+                builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+                    .AddJwtBearer(options =>
                     {
-                        ValidateIssuerSigningKey = true,
-                        IssuerSigningKey = new SymmetricSecurityKey(key),
-                        ValidateIssuer = true,
-                        ValidIssuer = jwtSettings.Issuer,
-                        ValidateAudience = true,
-                        ValidAudience = jwtSettings.Audience,
-                        ValidateLifetime = true,
-                        ClockSkew = TimeSpan.Zero
-                    };
-                });
+                        options.MapInboundClaims = false;   // keep "sub" and "role" exactly as issued
+                        options.TokenValidationParameters = JwtTokenValidation.CreateParameters(jwtSettings, signingKey);
+                    });
 
-                builder.Services.AddAuthorization();
+                // ── AUTHORISATION: what are you allowed to do? ──
+                builder.Services.AddSecureByDesignAuthorization();
+                builder.Services.AddSignupRateLimiting();
 
-                // ADD CORS POLICY
+                // ── CORS: allowed origins come from configuration, per environment ──
+                // appsettings.Production.json should list only the HTTPS production origins.
+                string[] allowedOrigins = builder.Configuration.GetSection("Cors:AllowedOrigins").Get<string[]>() ?? [];
                 builder.Services.AddCors(options =>
                 {
                     options.AddPolicy("AllowLandingPage",
-                        policy => policy.WithOrigins("https://ashuam.com", "https://www.ashuam.com", "http://127.0.0.1:5173", "http://105.115.5.71:5173")
+                        policy => policy.WithOrigins(allowedOrigins)
                                         .AllowAnyMethod()
                                         .AllowAnyHeader());
                 });
 
+                // Argon2id cost settings from appsettings.json (defaults apply if the section is missing)
+                builder.Services.Configure<Argon2idOptions>(builder.Configuration.GetSection("PasswordHashing:Argon2id"));
 
-                // Configure Forwarded Headers to trust Nginx proxy
+                // Register every algorithm under its own key
+                builder.Services.AddKeyedSingleton<IPasswordHasher, Argon2idPasswordHasher>("Argon2id");
+                builder.Services.AddKeyedSingleton<IPasswordHasher, Sha256PasswordHasher>("SHA256");
+
+                // The plain IPasswordHasher is whichever algorithm the config names.
+                string algorithm = builder.Configuration["PasswordHashing:Algorithm"] ?? "Argon2id";
+                builder.Services.AddSingleton<IPasswordHasher>(sp => sp.GetRequiredKeyedService<IPasswordHasher>(algorithm));
+
+                // ── FORWARDED HEADERS: trust ONLY the Nginx proxy ──
+                // Clearing KnownProxies/KnownNetworks let any client fake its IP with X-Forwarded-For,
+                // which would bypass per-IP rate limiting. Loopback stays trusted by default;
+                // add Nginx's address here if it runs on another host or container.
                 builder.Services.Configure<ForwardedHeadersOptions>(options =>
                 {
                     options.ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto;
-                    // Clear default loopback networks so it trusts your Nginx proxy setup
-                    options.KnownNetworks.Clear();
-                    options.KnownProxies.Clear();
+                    foreach (string proxy in builder.Configuration.GetSection("ForwardedHeaders:KnownProxies").Get<string[]>() ?? [])
+                        options.KnownProxies.Add(IPAddress.Parse(proxy));
                 });
+
+                builder.Services.AddHttpContextAccessor();
 
                 builder.Logging.ClearProviders();
                 builder.Host.UseNLog();
@@ -103,9 +112,6 @@ namespace Securebydesign.Api
 
                 builder.Services.AddScoped<EmailBlast>();
 
-                // Hub abstraction — bridges Application layer to SignalR without circular dependency
-                //builder.Services.AddScoped<IMessagingHub, MessagingHubService>();
-
                 builder.Services.AddHangfire(config => config
                     .SetDataCompatibilityLevel(CompatibilityLevel.Version_180)
                     .UseSimpleAssemblyNameTypeSerializer()
@@ -116,16 +122,12 @@ namespace Securebydesign.Api
 
                 builder.Services.AddHangfireServer(options =>
                 {
-                    options.WorkerCount = 2;   // keep low — this is a background job server, not a web worker
+                    options.WorkerCount = 2;
                 });
 
-                builder.Services.AddSingleton<Kernel>(sp =>
-                {
-                    return SemanticKernelFactory.CreateKernel(builder.Configuration);
-                });
+                builder.Services.AddSingleton<Kernel>(sp => SemanticKernelFactory.CreateKernel(builder.Configuration));
 
                 builder.Services.AddControllers();
-
                 builder.Services.AddEndpointsApiExplorer();
 
                 builder.Services.AddSwaggerGen(options =>
@@ -136,7 +138,6 @@ namespace Securebydesign.Api
                         Version = "v1"
                     });
 
-                    // Add the Authorize button and Bearer input to Swagger UI
                     options.AddSecurityDefinition("Bearer", new OpenApiSecurityScheme
                     {
                         Name = "Authorization",
@@ -168,70 +169,55 @@ namespace Securebydesign.Api
                 var app = builder.Build();
 
                 app.UseForwardedHeaders();
-
-                // Middleware
-                // -----------------------------
                 app.UseMiddleware<ExceptionMiddleware>();
-
-                // ENABLE CORS (Must be placed after UseRouting but before UseAuthorization/Endpoints)
                 app.UseCors("AllowLandingPage");
 
-                //if (app.Environment.IsDevelopment())
-                //{
-                app.UseSwagger();
-                app.UseSwaggerUI(c =>
+                // Swagger publishes a full map of your API: development only
+                if (app.Environment.IsDevelopment())
                 {
-                    c.SwaggerEndpoint("/swagger/v1/swagger.json", "Ashuam API v1");
-                });
-                //}
+                    app.UseSwagger();
+                    app.UseSwaggerUI(c =>
+                    {
+                        c.SwaggerEndpoint("/swagger/v1/swagger.json", "Securebydesign API v1");
+                    });
+                }
 
-                app.UseStaticFiles(); // Serves files from wwwroot by default
+                app.UseStaticFiles();
 
-                // Serves files from external physical paths like /uploads
+                // NOTE: files here are public to anyone who knows the URL (no auth check).
+                // Don't store identity documents or other private uploads in this folder.
                 app.UseStaticFiles(new StaticFileOptions
                 {
                     FileProvider = new PhysicalFileProvider("/uploads"),
                     RequestPath = "/uploads"
                 });
 
-                // Make sure these are in the right order in the pipeline
                 app.UseRouting();
-                app.UseAuthentication();
-                app.UseAuthorization();
+                app.UseAuthentication();   // 1. who are you?
+                app.UseAuthorization();    // 2. what can you do?
+                app.UseRateLimiter();      // 3. how often?
+
                 app.UseHangfireDashboard("/hangfire", new DashboardOptions
                 {
 #if DEBUG
-                    Authorization = new[]
-                {
-                    new Hangfire.Dashboard.LocalRequestsOnlyAuthorizationFilter()
-                }
+                    Authorization = new[] { new Hangfire.Dashboard.LocalRequestsOnlyAuthorizationFilter() }
 #else
-                    Authorization = new[] { new HangfireAuthFilter() }
+                    Authorization = new[] { new HangfireAuthFilter() }   // make sure this requires the Admin role
 #endif
                 });
 
-                // ── SCHEDULE RECURRING JOB ──
-                // Cron: 9AM, 12PM, 8PM — WAT is UTC+1, so adjust accordingly
-                // "0 8,11,19 * * *" = 9AM, 12PM, 8PM WAT (UTC+1)
                 using (var scope = app.Services.CreateScope())
                 {
-                    var recurringJobManager = scope.ServiceProvider
-                        .GetRequiredService<IRecurringJobManager>();
+                    var recurringJobManager = scope.ServiceProvider.GetRequiredService<IRecurringJobManager>();
 
                     recurringJobManager.AddOrUpdate<EmailBlast>(
                         recurringJobId: "feed-notification-job",
                         methodCall: job => job.ExecuteAsync(),
                         cronExpression: "0 8,11,19 * * *",
-                        options: new RecurringJobOptions
-                        {
-                            TimeZone = TimeZoneInfo.Utc
-                        }
-                    );
+                        options: new RecurringJobOptions { TimeZone = TimeZoneInfo.Utc });
                 }
 
-                app.MapControllers();
-
-                app.MapControllers();
+                app.MapControllers();   // was mapped twice
 
                 app.Run();
             }

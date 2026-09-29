@@ -12,6 +12,7 @@ using Npgsql;
 using System;
 using System.Collections.Generic;
 using System.Text;
+using Securebydesign.Application.Services.AuthServices;
 
 namespace Securebydesign.Infrastructure.Repositories
 {
@@ -65,13 +66,37 @@ namespace Securebydesign.Infrastructure.Repositories
         // GET BY EMAIL 
         public async Task<User?> GetUserByEmailAsync(string email)
         {
-            var sql = "SELECT * FROM users WHERE email = @Email AND isdeleted = 0";
+            //var sql = "SELECT * FROM users WHERE email = @Email AND isdeleted = 0";
+
+            // VULNERABLE: user input becomes part of the SQL itself
+            var sql = $"SELECT * FROM users WHERE email = '{email}' AND isdeleted = 0";
 
             try
             {
                 using var conn = CreateConnection();
                 var response = await conn.QueryFirstOrDefaultAsync<User>(sql, new { Email = email });
                 return response;    
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error get user by Email {Email}", email);
+                throw;
+            }
+        }
+
+        public async Task<IEnumerable<User>> GetUserByEmail(string email)
+        {
+            //var sql = "SELECT * FROM users WHERE email = @Email AND isdeleted = 0";
+
+            // VULNERABLE: user input becomes part of the SQL itself
+            var sql = $"SELECT * FROM users WHERE email = '{email}' AND isdeleted = 0";
+
+            try
+            {
+                using var conn = CreateConnection();
+                //var response = await conn.QueryAsync<User>(sql, new { Email = email });
+                var response = await conn.QueryAsync<User>(sql);
+                return response;
             }
             catch (Exception ex)
             {
@@ -196,7 +221,7 @@ namespace Securebydesign.Infrastructure.Repositories
             var sql = @"
                 UPDATE users
                 SET username       = @Username,
-                    role           = @Role,
+                   
                     firstname      = @FirstName,
                     lastname       = @LastName,
                     phonenumber    = @PhoneNumber,
@@ -213,7 +238,7 @@ namespace Securebydesign.Infrastructure.Repositories
                 var rows = await conn.ExecuteAsync(sql, new
                 {
                     user.Username,
-                    user.Role,
+                    //user.Role,
                     user.FirstName,
                     user.LastName,
                     user.PhoneNumber,
@@ -252,6 +277,25 @@ namespace Securebydesign.Infrastructure.Repositories
             {
                 _logger.LogError(ex, "Error deleting user {Id}", id);
                 throw;
+            }
+        }
+
+        // SAVE AUDIT LOG
+        public async Task SaveAuditLogAsync(AuditLog log)
+        {
+            const string sql = @"
+                INSERT INTO audit_log (event, user_id, role, endpoint, status, ip, correlation_id)
+                VALUES (@Event, @UserId, @Role, @Endpoint, @Status, @Ip, @CorrelationId);";
+
+            try
+            {
+                using var conn = CreateConnection();
+                await conn.ExecuteAsync(sql, log);
+            }
+            catch (Exception ex)
+            {
+                // Never let a failed audit write break the user's request
+                _logger.LogError(ex, "Failed to write audit log for event {Event}", log.Event);
             }
         }
     }
