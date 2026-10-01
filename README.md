@@ -67,3 +67,40 @@ CREATE TABLE IF NOT EXISTS public.audit_log
     correlation_id character varying(100) COLLATE pg_catalog."default",
     CONSTRAINT audit_log_pkey PRIMARY KEY (id)
 )
+
+AppSettings Values
+{
+  "Logging": {
+    "LogLevel": {
+      "Default": "Information",
+      "Microsoft.AspNetCore": "Warning"
+    }
+  },
+  "Domain": "https://test.com",
+  "AllowedHosts": "*",
+  "ConnectionStrings": {
+    "DefaultConnection": "Host=db.domain.com;Port=25060;Database=defaultdb;Username=db;Password=xx;SslMode=Require;TrustServerCertificate=true"
+  },
+  "JwtSettings": {
+    "Issuer": "Securebydesign.Api",
+    "Audience": "Securebydesign.Client",
+    "ExpiryMinutes": 30
+  },
+  "SecureToken": {
+    "ExpiryMinutes": 60
+  },
+  "Cors": {
+    "AllowedOrigins": [ "https://Securebydesign.com", "https://www.Securebydesign.com" ]
+  },
+  "ForwardedHeaders": {
+    "KnownProxies": [] // e.g. [ "10.0.0.5" ] if Nginx is on another host
+  },
+  "PasswordHashing": {
+    "Algorithm": "Argon2id", // or "SHA256"
+    "Argon2id": {
+      "MemorySizeKb": 512456,
+      "Iterations": 60,
+      "Parallelism": 1
+    }
+  }
+}
